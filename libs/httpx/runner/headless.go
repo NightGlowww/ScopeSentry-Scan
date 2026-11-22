@@ -84,6 +84,14 @@ func NewBrowser(proxy string, useLocal bool, optionalArgs map[string]string) (*B
 		}
 	}
 
+	// 没显式给 proxy 时回落到 HTTP_PROXY：chrome 子进程不读环境变量，
+	// 只认 --proxy-server，不传就等于直连（2026-11-22 腾讯封 80 口事故）
+	if proxy == "" {
+		proxy = os.Getenv("HTTP_PROXY")
+		if proxy == "" {
+			proxy = os.Getenv("HTTPS_PROXY")
+		}
+	}
 	if proxy != "" {
 		chromeLauncher = chromeLauncher.Proxy(proxy)
 	}

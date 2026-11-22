@@ -159,6 +159,10 @@ for H in $NODES; do
   fi
   echo "   已换镜像并重启（tag ${VER:-latest}）"
 
+  # 重启后容器 cgroup 路径变了，透明代理规则要按新路径重挂；
+  # 不重挂的话裸 TCP（端口扫描/浏览器）又直连出去——2026-11-22 腾讯封 80 就是这么来的。
+  run_remote "$H" "sudo systemctl restart ss-tproxy.service 2>/dev/null || true" >/dev/null 2>&1 || true
+
   if wait_register "$H"; then
     GOT_VER="$(run_remote "$H" "docker logs --tail 40 $CONTAINER" 2>&1 | grep Register | tail -1 | grep -oE "[0-9]+[.][0-9]+[.][0-9]+" | tail -1 || true)"
     if [ -n "$VER" ] && [ -n "$GOT_VER" ] && [ "$GOT_VER" != "$VER" ]; then

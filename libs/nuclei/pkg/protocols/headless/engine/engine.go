@@ -77,6 +77,10 @@ func New(options *types.Options) (*Browser, error) {
 		chromeLauncher = chromeLauncher.Proxy(types.ProxyURL)
 	}
 
+	// chrome 只认 --proxy-server，不读 HTTP_PROXY（2026-11-22）
+	if p := os.Getenv("HTTP_PROXY"); p != "" {
+		chromeLauncher = chromeLauncher.Proxy(p)
+	}
 	for k, v := range options.ParseHeadlessOptionalArguments() {
 		chromeLauncher.Set(flags.Flag(k), v)
 	}
