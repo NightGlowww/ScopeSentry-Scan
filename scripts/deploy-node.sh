@@ -159,6 +159,10 @@ for H in $NODES; do
   fi
   echo "   已换镜像并重启（tag ${VER:-latest}）"
 
+  # 历史遗留 scopesentry-scan-old-* 带 --restart always，机器一重启就自启，
+  # 既没有代理环境变量（裸 TCP 直连）又抢内存——2026-11-22 事故之一。每次部署顺手清掉。
+  run_remote "$H" "for c in \$(docker ps -a --format '{{.Names}}' | grep 'scan-old'); do docker rm -f \$c >/dev/null 2>&1; done" >/dev/null 2>&1 || true
+
   # 重启后容器 cgroup 路径变了，透明代理规则要按新路径重挂；
   # 不重挂的话裸 TCP（端口扫描/浏览器）又直连出去——2026-11-22 腾讯封 80 就是这么来的。
   run_remote "$H" "sudo systemctl restart ss-tproxy.service 2>/dev/null || true" >/dev/null 2>&1 || true
