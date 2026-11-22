@@ -57,6 +57,7 @@ func Register() {
 				logger.SlogErrorLocal(fmt.Sprintf("Error setting initial values: %s", err))
 				return
 			}
+			MarkHeartbeat()
 			logger.SlogInfo(fmt.Sprintf("Register Success:%v - version %v", nodeName, global.VERSION))
 			firstRegister = false
 		} else {
@@ -103,6 +104,8 @@ func Register() {
 				logger.SlogErrorLocal(fmt.Sprintf("Error setting initial values: %s", err))
 				continue
 			}
+			// 心跳成功才打点：写不进去说明链路断了，看门狗会在 3 分钟后自杀重启
+			MarkHeartbeat()
 		}
 		<-ticker
 	}

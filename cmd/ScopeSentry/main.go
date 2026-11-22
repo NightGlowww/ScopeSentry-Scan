@@ -75,6 +75,8 @@ func main() {
 	// 让 Go 运行时知道 cgroup 上限（否则 RSS 会顶到容器上限被限流）
 	node.ApplyContainerMemoryLimit()
 	node.StartMemoryWatchdog(95, 5)
+	// 心跳看门狗：3 分钟上报不了心跳就自杀重启（内存看门狗在进程卡死时也跑不动）
+	node.StartHeartbeatWatchdog(3 * time.Minute)
 
 	// 初始化协程池
 	pool.Initialize()

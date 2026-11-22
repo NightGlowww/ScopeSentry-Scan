@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
@@ -87,6 +88,39 @@ func StartMemoryWatchdog(threshold float64, minutes int) {
 				}
 			} else {
 				streak = 0
+			}
+		}
+	}()
+}
+
+var lastHeartbeatUnix atomic.Int64
+
+// MarkHeartbeat 每次心跳成功写入 Redis 后调用。
+func MarkHeartbeat() {
+	lastHeartbeatUnix.Store(time.Now().Unix())
+}
+
+// StartHeartbeatWatchdog 心跳看门狗：超过 staleAfter 没有成功上报心跳就退出，让 Docker 重启。
+//
+// 为什么需要它：内存看门狗只在「内存 ≥95%」时生效，而实测进程会先卡死（GC 抖动/调度饥饿），
+// 连看门狗 goroutine 都跑不动 —— 于是容器状态 running、节点却对服务端静默。
+// 心跳时间戳至少能反映「主循环是否还在推进」，独立 goroutine 检查，卡住就自杀重启（2026-11-22）。
+func StartHeartbeatWatchdog(staleAfter time.Duration) {
+	if staleAfter <= 0 {
+		staleAfter = 3 * time.Minute
+	}
+	MarkHeartbeat()
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			last := lastHeartbeatUnix.Load()
+			if last == 0 {
+				continue
+			}
+			stale := time.Since(time.Unix(last, 0))
+			if stale > staleAfter {
+				logger.SlogErrorLocal(fmt.Sprintf("no heartbeat for %s: exiting so Docker restarts this node", stale.Truncate(time.Second)))
+				os.Exit(1)
 			}
 		}
 	}()
