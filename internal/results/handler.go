@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/global"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/mongodb"
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/netguard"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/notification"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/redis"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/types"
@@ -259,6 +260,12 @@ func (h *handler) AssetOtherInsert(result *types.AssetOther) {
 }
 
 func (h *handler) AssetHttpInsert(result *types.AssetHttp) {
+	// 边缘网关的空体 418/421 不是站点内容：落库只会制造假资产，
+	// 并让后续目录扫描/漏洞扫描对着一个“拒绝页”白跑（对照 ARL-Next 补，2026-11-24）。
+	if netguard.IsGatewayRejection(result.StatusCode, result.ContentLength, result.ResponseBody) {
+		logger.SlogInfoLocal(fmt.Sprintf("skip gateway rejection %d %s", result.StatusCode, result.URL))
+		return
+	}
 	// 资产比较少，并且需要实时获取历史记录，所以不采用多条插入的方式
 	var interfaceSlice interface{}
 	rootDomain, err := utils.Tools.GetRootDomain(result.Host)

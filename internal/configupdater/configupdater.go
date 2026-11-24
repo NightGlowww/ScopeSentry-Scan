@@ -222,7 +222,10 @@ func LoadPoc(id []string) {
 	// 加载所有poc
 	if len(id) == 0 {
 		if !existFlag {
-			if err := mongodb.MongodbClient.FindAll("PocList", bson.M{}, bson.M{"_id": 1, "content": 1, "name": 1, "level": 1}, &tmpPocR); err != nil {
+			// excluded=true 的模板不进节点：它们是「只有状态码 / 唯一判据是常见词」这类
+			// 必然大面积误报的写法（2026-11-24 误报复验的根因之一）。控制面把结论标掉，
+			// 节点连加载都不加载，比事后删记录更省。
+			if err := mongodb.MongodbClient.FindAll("PocList", bson.M{"excluded": bson.M{"$ne": true}}, bson.M{"_id": 1, "content": 1, "name": 1, "level": 1}, &tmpPocR); err != nil {
 				logger.SlogError(fmt.Sprintf("Get Poc List error: %s", err))
 				return
 			}
@@ -245,6 +248,8 @@ func LoadPoc(id []string) {
 			return
 		}
 	}
+
+	logger.SlogInfoLocal(fmt.Sprintf("poc load: %d templates (excluded ones are skipped)", len(tmpPocR)))
 
 	if len(tmpPocR) != 0 {
 		for _, poc := range tmpPocR {

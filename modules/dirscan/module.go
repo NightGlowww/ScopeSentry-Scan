@@ -12,6 +12,7 @@ import (
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/contextmanager"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/handler"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/interfaces"
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/netguard"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/options"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/plugins"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/pool"
@@ -34,6 +35,31 @@ func NewRunner(op *options.TaskOptions, nextModule interfaces.ModuleRunner) *Run
 		Option:     op,
 		NextModule: nextModule,
 	}
+}
+
+// targetURL 从各种输入里取出可以探测的 URL；取不到就不做 catch-all 判断。
+func targetURL(data interface{}) string {
+	switch v := data.(type) {
+	case types.UrlResult:
+		return v.Output
+	case *types.UrlResult:
+		if v != nil {
+			return v.Output
+		}
+	case types.AssetHttp:
+		return v.URL
+	case *types.AssetHttp:
+		if v != nil {
+			return v.URL
+		}
+	case types.AssetOther:
+		return "http://" + v.Host + ":" + v.Port
+	case *types.AssetOther:
+		if v != nil {
+			return "http://" + v.Host + ":" + v.Port
+		}
+	}
+	return ""
 }
 
 func (r *Runner) ModuleRun() error {
@@ -120,6 +146,12 @@ func (r *Runner) ModuleRun() error {
 			allPluginWg.Add(1)
 			go func(data interface{}) {
 				defer allPluginWg.Done()
+				// catch-all 站点对任意路径回同一页，目录扫描在它上面只会刷出成百上千条
+				// “敏感路径”噪音（对照 ARL-Next 的双随机基线早退，2026-11-24）。
+				if u := targetURL(data); u != "" && netguard.IsCatchAll(u, 8*time.Second) {
+					logger.SlogInfoLocal(fmt.Sprintf("dirscan skip catch-all host: %s", u))
+					return
+				}
 				if len(r.Option.DirScan) != 0 {
 					// 调用插件
 					for _, pluginId := range r.Option.DirScan {
