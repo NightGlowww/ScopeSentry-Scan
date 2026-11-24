@@ -249,7 +249,10 @@ func LoadPoc(id []string) {
 		}
 	}
 
-	logger.SlogInfoLocal(fmt.Sprintf("poc load: %d templates (excluded ones are skipped)", len(tmpPocR)))
+	// 有 lock 文件时不会重新从 Mongo 拉，tmpPocR 是空的；这时报磁盘上的实际数量，
+	// 否则重启日志会显示 "poc load: 0 templates"，看起来像模板全丢了。
+	onDisk, _ := filepath.Glob(filepath.Join(global.PocDir, "*.yaml"))
+	logger.SlogInfoLocal(fmt.Sprintf("poc load: %d from db, %d on disk (excluded ones are skipped)", len(tmpPocR), len(onDisk)))
 
 	if len(tmpPocR) != 0 {
 		for _, poc := range tmpPocR {
