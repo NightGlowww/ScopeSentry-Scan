@@ -8,12 +8,14 @@
 package results
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/mongodb"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/types"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
-	"github.com/Autumn-27/ScopeSentry-Scan/pkg/utils"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"reflect"
 )
@@ -103,47 +105,54 @@ func (r *result) UpdateNow(op types.BulkUpdateOperation, name string) bool {
 	return true
 }
 
+// InsertVulnerabilityScan 写入漏洞结果。
+//
+// 2026-11-24 改：hash 从「随机 16 位」改成「(模板ID + URL) 的 sha256 前 16 位」，
+// 并按 hash 做 upsert。原来每次命中都生成新 hash，同一个洞扫两遍就变成两条记录
+// （实测 LibreChat / Internal PKI 各重复一次）。
+//
+// 更新时用 $setOnInsert 保住 status：用户已经标成「已确认/已忽略」的记录，
+// 重新扫描不能把状态重置回「未处理」。
 func (r *result) InsertVulnerabilityScan(result *[]interface{}) {
-	var newVulnResults []interface{}
-	var vulDetails []interface{}
-
 	for _, v := range *result {
 		var vulnResult *types.VulnResult
-
-		// 第一种：*types.VulnResult
 		if vr, ok := v.(*types.VulnResult); ok {
 			vulnResult = vr
 		}
-
-		// 第二种：**types.VulnResult
 		if vrPtr, ok := v.(**types.VulnResult); ok && vrPtr != nil {
 			vulnResult = *vrPtr
 		}
-
 		if vulnResult == nil {
 			fmt.Println("类型断言失败:", reflect.TypeOf(v))
 			continue
 		}
 
-		// 生成唯一 Hash
-		vulnResult.Hash = utils.Tools.GenerateRandomString(16)
+		sum := sha256.Sum256([]byte(vulnResult.VulnId + "|" + vulnResult.Url))
+		vulnResult.Hash = hex.EncodeToString(sum[:])[:16]
 
-		// 保存详细信息
-		vulDetails = append(vulDetails, types.VulnerabilityDetail{
-			Hash:     vulnResult.Hash,
-			Request:  vulnResult.Request,
-			Response: vulnResult.Response,
-		})
+		// 详情按 hash 覆盖写：同一洞再命中时更新证据，不新增行。
+		_, _ = mongodb.MongodbClient.Upsert("vulnerabilityDetail",
+			bson.M{"hash": vulnResult.Hash},
+			bson.M{"$set": types.VulnerabilityDetail{
+				Hash:     vulnResult.Hash,
+				Request:  vulnResult.Request,
+				Response: vulnResult.Response,
+			}})
 
-		// 清空请求与响应
 		vulnResult.Request = ""
 		vulnResult.Response = ""
 
-		// 放回新的结果集
-		newVulnResults = append(newVulnResults, vulnResult)
+		fields := bson.M{
+			"url": vulnResult.Url, "vulnid": vulnResult.VulnId, "vulname": vulnResult.VulName,
+			"matched": vulnResult.Matched, "project": vulnResult.Project, "level": vulnResult.Level,
+			"time": vulnResult.Time, "taskName": vulnResult.TaskName,
+			"rootDomain": vulnResult.RootDomain, "tags": vulnResult.Tags,
+		}
+		_, err := mongodb.MongodbClient.Upsert("vulnerability",
+			bson.M{"hash": vulnResult.Hash},
+			bson.M{"$set": fields, "$setOnInsert": bson.M{"status": vulnResult.Status}})
+		if err != nil {
+			logger.SlogWarnLocal(fmt.Sprintf("upsert vulnerability %s error: %s", vulnResult.Hash, err))
+		}
 	}
-
-	// 写入数据库
-	r.Insert("vulnerability", &newVulnResults)
-	r.Insert("vulnerabilityDetail", &vulDetails)
 }
