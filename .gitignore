@@ -10,3 +10,10 @@ xray.yaml
 /*.stat
 /*license
 /*xss.md
+# 本地构建产物（156MB/个，2026-11-24 清理 39 个共 5.9G）
+/ss-node*
+/ss-v*
+/ss-par
+/ss-sev
+/ScopeSentry-Scan-*/
+*.gz
