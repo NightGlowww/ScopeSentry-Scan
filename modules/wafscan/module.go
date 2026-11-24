@@ -123,6 +123,25 @@ func hostOf(raw string) string {
 	return raw
 }
 
+// bestCarrier 从 "carrier:class" 列表里挑出现最多的载体名。
+func bestCarrier(list []string) string {
+	count := map[string]int{}
+	for _, s := range list {
+		name := s
+		if i := strings.Index(s, ":"); i > 0 {
+			name = s[:i]
+		}
+		count[name]++
+	}
+	best, n := "", 0
+	for k, v := range count {
+		if v > n || (v == n && k < best) {
+			best, n = k, v
+		}
+	}
+	return best
+}
+
 func saveProfile(p *Profile, taskID string) error {
 	if mongodb.MongodbClient == nil {
 		return fmt.Errorf("mongodb not ready")
@@ -130,7 +149,9 @@ func saveProfile(p *Profile, taskID string) error {
 	doc := bson.M{
 		"host": p.Host, "url": p.URL, "vendor": p.Vendor,
 		"bypasses": p.Bypasses, "inspected": p.Inspected, "inconclusive": p.Inconclusive,
-		"results": p.Results, "measuredAt": p.MeasuredAt, "taskName": p.Host,
+		"results": p.Results, "measuredAt": p.MeasuredAt, "taskName": taskID,
+		// recommendedCarrier：命中次数最多的载体，给「用哪条载体重放」当默认值。
+		"recommendedCarrier": bestCarrier(p.Bypasses),
 		// wafActive=false 的画像（一次拦截都没观测到）不参与漏洞回填，
 		// 否则 catch-all 主机上的「全载体可绕过」会被当成真的绕过写进报告。
 		"wafActive": p.WafActive, "note": p.Note,
