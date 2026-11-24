@@ -22,6 +22,7 @@ import (
 	"github.com/Autumn-27/ScopeSentry-Scan/modules/urlscan"
 	"github.com/Autumn-27/ScopeSentry-Scan/modules/urlsecurity"
 	"github.com/Autumn-27/ScopeSentry-Scan/modules/vulnerabilityscan"
+	"github.com/Autumn-27/ScopeSentry-Scan/modules/wafscan"
 	"github.com/Autumn-27/ScopeSentry-Scan/modules/webcrawler"
 )
 
@@ -36,9 +37,16 @@ func CreateScanProcess(op *options.TaskOptions) interfaces.ModuleRunner {
 	vulnerabilityModule.SetInput(vulnerabilityInputChan)
 	op.InputChan["Vulnerability"] = vulnerabilityInputChan
 
+	// WAF 载体画像模块（在漏洞扫描之前：先测出哪个载体不被检查，再决定怎么打）
+	op.ModuleRunWg.Add(1)
+	wafScanModule := wafscan.NewRunner(op, vulnerabilityModule)
+	wafScanInputChan := make(chan interface{}, 1000)
+	wafScanModule.SetInput(wafScanInputChan)
+	op.InputChan["WafScan"] = wafScanInputChan
+
 	// 目录扫描模块
 	op.ModuleRunWg.Add(1)
-	dirScanModule := dirscan.NewRunner(op, vulnerabilityModule)
+	dirScanModule := dirscan.NewRunner(op, wafScanModule)
 	dirScanInputChan := make(chan interface{}, 1000)
 	dirScanModule.SetInput(dirScanInputChan)
 	op.InputChan["DirScan"] = dirScanInputChan
