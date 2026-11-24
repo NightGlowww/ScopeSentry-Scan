@@ -79,7 +79,8 @@ func (r *Runner) ModuleRun() error {
 					logger.SlogWarnLocal(fmt.Sprintf("wafscan save %s: %v", target, err))
 					return
 				}
-				logger.SlogInfoLocal(fmt.Sprintf("wafscan %s vendor=%q bypasses=%d inspected=%d", prof.Host, prof.Vendor, len(prof.Bypasses), prof.Inspected))
+				logger.SlogInfoLocal(fmt.Sprintf("wafscan %s vendor=%q wafActive=%v bypasses=%d inspected=%d inconclusive=%d",
+					prof.Host, prof.Vendor, prof.WafActive, len(prof.Bypasses), prof.Inspected, prof.Inconclusive))
 			}(u, r.Option.ID)
 		}
 	}
@@ -130,6 +131,9 @@ func saveProfile(p *Profile, taskID string) error {
 		"host": p.Host, "url": p.URL, "vendor": p.Vendor,
 		"bypasses": p.Bypasses, "inspected": p.Inspected, "inconclusive": p.Inconclusive,
 		"results": p.Results, "measuredAt": p.MeasuredAt, "taskName": p.Host,
+		// wafActive=false 的画像（一次拦截都没观测到）不参与漏洞回填，
+		// 否则 catch-all 主机上的「全载体可绕过」会被当成真的绕过写进报告。
+		"wafActive": p.WafActive, "note": p.Note,
 	}
 	_, err := mongodb.MongodbClient.Upsert("waf_profile", bson.M{"host": p.Host}, bson.M{"$set": doc})
 	return err

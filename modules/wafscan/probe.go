@@ -173,6 +173,12 @@ type Profile struct {
 	Inconclusive int      `bson:"inconclusive" json:"inconclusive"`
 	Results      []Result `bson:"results" json:"results"`
 	MeasuredAt   string   `bson:"measuredAt" json:"measuredAt"`
+	// WafActive 表示「确实观测到拦截」。
+	// inspected==0 说明这台主机对任何载荷都放行：要么没挂 WAF，要么是 catch-all
+	// （SPA / 默认页 / 通配 200）。这时 bypasses 不能算数——实测
+	// acceptance.cuponation.no 报过 bypasses=72 inspected=0，全是假绕过。
+	WafActive bool   `bson:"wafActive" json:"wafActive"`
+	Note      string `bson:"note,omitempty" json:"note,omitempty"`
 }
 
 var (
@@ -313,6 +319,17 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 			}
 			prof.Results = append(prof.Results, r)
 		}
+	}
+
+	// 收口：一次「payload 被拦」都没观测到时，不能声称任何绕过。
+	// 放行不等于绕过——只有「同载体 benign 放行 + payload 被拦」才建立得起基线。
+	// 这是全项目一直在用的 catch-all 纪律（netguard.IsCatchAll 同理）。
+	prof.WafActive = prof.Inspected > 0
+	if !prof.WafActive {
+		if len(prof.Bypasses) > 0 {
+			prof.Note = "no blocking observed for any payload: host is catch-all or has no WAF rules; bypasses discarded"
+		}
+		prof.Bypasses = nil
 	}
 	return prof, nil
 }
