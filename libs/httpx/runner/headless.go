@@ -61,6 +61,7 @@ func NewBrowser(proxy string, useLocal bool, optionalArgs map[string]string) (*B
 		Set("window-size", fmt.Sprintf("%d,%d", 1080, 1920)).
 		Set("mute-audio", "true").
 		Set("incognito", "true").
+		Set("disable-quic", "true").
 		Delete("use-mock-keychain").
 		Headless(true).
 		UserDataDir(dataStore)

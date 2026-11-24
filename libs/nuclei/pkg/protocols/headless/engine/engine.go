@@ -46,6 +46,7 @@ func New(options *types.Options) (*Browser, error) {
 		Set("window-size", fmt.Sprintf("%d,%d", 1080, 1920)).
 		Set("mute-audio", "true").
 		Set("incognito", "true").
+		Set("disable-quic", "true").
 		Delete("use-mock-keychain").
 		UserDataDir(dataStore)
 
