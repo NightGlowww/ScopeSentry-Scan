@@ -59,7 +59,11 @@ func (r *Runner) ModuleRun() error {
 			if u == "" || !wafscanEnabled() {
 				continue
 			}
-			if _, loaded := measured.LoadOrStore(u, true); loaded {
+			// 去重键用「scheme://host:port」而不是完整 URL：
+			// Probe 内部会把目标归一成 scheme://host/，所以同主机不同路径会重复探测。
+			// 2026-11-26 实测：ftp.id-watsonsbesti.com:8443 在同一任务里被扫了 6 次，
+			// 每次 4 个 inconclusive，全是白烧的请求。
+			if _, loaded := measured.LoadOrStore(probeKey(u), true); loaded {
 				continue
 			}
 			wg.Add(1)
