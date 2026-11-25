@@ -114,6 +114,10 @@ func RunRedisTask() {
 			taskKey := fmt.Sprintf("task:%v", runnerOption.ID)
 
 			logger.SlogInfo(fmt.Sprintf("Task begin: %v %v", runnerOption.ID, runnerOption.TaskName))
+			// 告诉服务端「这个节点现在真正在跑哪个任务」。
+			// 任务状态对账靠它区分「运行中」和「排队/孤儿」——
+			// 2026-11-25 实测：库里 33 个 running，节点日志只有 1 个 Task begin。
+			_ = redis.RedisClient.Set(context.Background(), "node:"+global.AppConfig.NodeName+":currentTask", runnerOption.ID)
 			// 记录任务开始时的失败计数，任务结束算增量写回服务端，
 			// 让「本次任务期间工具失败几次」在任务记录里可见（2026-11-20）。
 			taskFailStart.Store(runnerOption.ID, utils.Tools.EventFailureCount())
@@ -280,6 +284,8 @@ func RunRedisTask() {
 			debug.FreeOSMemory()
 			// 运行任务结束相关的方法
 			logger.SlogInfo(fmt.Sprintf("Task clean end: %v", runnerOption.ID))
+			// 清空 currentTask：服务端据此把「运行中」判定交给事实，而不是历史残留。
+			_ = redis.RedisClient.Set(context.Background(), "node:"+global.AppConfig.NodeName+":currentTask", "")
 		}
 	}
 }
