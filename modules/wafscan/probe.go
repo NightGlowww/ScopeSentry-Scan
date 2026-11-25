@@ -11,6 +11,7 @@ package wafscan
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -30,6 +31,11 @@ const (
 	StateNotInspected = "not_inspected" // 两者都放行 → 该载体不被检查（可绕过）
 	StateInconclusive = "inconclusive"  // benign 就被拦 → 不可测
 	StateAppRejected  = "app_rejected"  // 两者同样状态且非 2xx → 应用拒绝，无法归因
+	// 从成熟引擎（waf-harness/wafprobe）移植的两个状态：
+	// carrier_divergent：同一载荷换个编码后，benign 自己的响应就变了 → 差分不可归因于 WAF
+	// origin_rejects_encoding：源站拒收该编码（benign 就被打回），无法测
+	StateCarrierDivergent      = "carrier_divergent"
+	StateOriginRejectsEncoding = "origin_rejects_encoding"
 )
 
 // 攻击族：每族给 benign 与 payload 配对，避免单条串的误判。
@@ -51,6 +57,10 @@ var families = []family{
 // carrier 描述一个载体：如何把字符串放进请求。
 type carrier struct {
 	Name string
+	// Plain 指向同族的「明文对照」载体名（如 json-gzip → json）。
+	// 跨编码守卫用它：benign 在压缩与明文下若不同形，说明响应差异来自编码本身，
+	// 不能算 WAF 放行（wafprobe 的 CARRIER_DIVERGENT）。
+	Plain string
 	// Build 返回 method / body / contentType / 额外头部。
 	Build func(payload string, target string) (method, body, ctype string, headers map[string]string)
 }
@@ -72,8 +82,23 @@ func utf16be(s string) []byte {
 	return b
 }
 
+// df 是 deflate（zlib 包装的 RFC1950）。有些 WAF 解 gzip 不解 deflate。
+func df(b []byte) []byte {
+	var buf bytes.Buffer
+	w, _ := zlib.NewWriterLevel(&buf, zlib.BestCompression)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	return buf.Bytes()
+}
+
+// carriers 是从 waf-harness/wafprobe 的 22 载体矩阵移植过来的子集：
+//   - 覆盖 gzip / deflate / 嵌套压缩 / utf-16be / chunked / form / xml / text
+//   - 覆盖 7 个常见请求头
+//   - Plain 字段指向同族明文载体，供跨编码守卫判断「响应差异是否来自编码本身」
+//
+// brotli 需要第三方库，暂未纳入（记为已知缺口，见 docs/WAF-BYPASS.md）。
 var carriers = []carrier{
-	{"query", func(p, target string) (string, string, string, map[string]string) {
+	{Name: "query", Build: func(p, target string) (string, string, string, map[string]string) {
 		sep := "?"
 		if strings.Contains(target, "?") {
 			sep = "&"
@@ -81,35 +106,70 @@ var carriers = []carrier{
 		u := target + sep + "wafscan=" + url.QueryEscape(p)
 		return http.MethodGet, "", "", map[string]string{"__url": u}
 	}},
-	{"header-ua", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "header-ua", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodGet, "", "", map[string]string{"User-Agent": p}
 	}},
-	{"header-referer", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "header-referer", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodGet, "", "", map[string]string{"Referer": "https://wafscan.invalid/" + p}
 	}},
-	{"header-xff", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "header-xff", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodGet, "", "", map[string]string{"X-Forwarded-For": p}
 	}},
-	{"json", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "header-cookie", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodGet, "", "", map[string]string{"Cookie": "wafscan=" + url.QueryEscape(p)}
+	}},
+	{Name: "header-xfh", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodGet, "", "", map[string]string{"X-Forwarded-Host": p + ".wafscan.invalid"}
+	}},
+	{Name: "header-origurl", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodGet, "", "", map[string]string{"X-Original-URL": "/" + url.QueryEscape(p)}
+	}},
+	{Name: "header-xfilename", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodGet, "", "", map[string]string{"X-File-Name": p}
+	}},
+	{Name: "json", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, `{"q":"` + p + `"}`, "application/json", nil
 	}},
-	{"json-gzip", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "json-gzip", Plain: "json", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, string(gz([]byte(`{"q":"` + p + `"}`))), "application/json",
 			map[string]string{"Content-Encoding": "gzip"}
 	}},
-	{"json-utf16be", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "json-deflate", Plain: "json", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodPost, string(df([]byte(`{"q":"` + p + `"}`))), "application/json",
+			map[string]string{"Content-Encoding": "deflate"}
+	}},
+	{Name: "json-gzip-deflate", Plain: "json", Build: func(p, _ string) (string, string, string, map[string]string) {
+		// 先 deflate 再 gzip：WAF 只解一层时仍能拿到压缩内容。
+		return http.MethodPost, string(gz(df([]byte(`{"q":"` + p + `"}`)))), "application/json",
+			map[string]string{"Content-Encoding": "gzip"}
+	}},
+	{Name: "json-utf16be", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, string(utf16be(`{"q":"` + p + `"}`)), "application/json; charset=utf-16be", nil
 	}},
-	{"json-gzip-u16", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "json-gzip-u16", Plain: "json-utf16be", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, string(gz(utf16be(`{"q":"` + p + `"}`))), "application/json; charset=utf-16be",
 			map[string]string{"Content-Encoding": "gzip"}
 	}},
-	{"form", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "json-chunked", Plain: "json", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodPost, string(gz([]byte(`{"q":"` + p + `"}`))), "application/json",
+			map[string]string{"Content-Encoding": "gzip", "Transfer-Encoding": "chunked"}
+	}},
+	{Name: "form", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, "q=" + url.QueryEscape(p), "application/x-www-form-urlencoded", nil
 	}},
-	{"form-gzip", func(p, _ string) (string, string, string, map[string]string) {
+	{Name: "form-gzip", Plain: "form", Build: func(p, _ string) (string, string, string, map[string]string) {
 		return http.MethodPost, string(gz([]byte("q=" + url.QueryEscape(p)))), "application/x-www-form-urlencoded",
 			map[string]string{"Content-Encoding": "gzip"}
+	}},
+	{Name: "xml", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodPost, `<r><q>` + p + `</q></r>`, "text/xml", nil
+	}},
+	{Name: "xml-gzip", Plain: "xml", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodPost, string(gz([]byte(`<r><q>` + p + `</q></r>`))), "text/xml",
+			map[string]string{"Content-Encoding": "gzip"}
+	}},
+	{Name: "text-plain", Build: func(p, _ string) (string, string, string, map[string]string) {
+		return http.MethodPost, p, "text/plain", nil
 	}},
 }
 
@@ -156,11 +216,14 @@ func fingerprint(h http.Header) string {
 
 // Result 单个载体×族的判定。
 type Result struct {
-	Carrier string `bson:"carrier" json:"carrier"`
-	Class   string `bson:"class" json:"class"`
-	State   string `bson:"state" json:"state"`
-	Benign  int    `bson:"benign" json:"benign"`
-	Payload int    `bson:"payload" json:"payload"`
+	Carrier    string `bson:"carrier" json:"carrier"`
+	Class      string `bson:"class" json:"class"`
+	State      string `bson:"state" json:"state"`
+	Benign     int    `bson:"benign" json:"benign"`
+	Payload    int    `bson:"payload" json:"payload"`
+	Plain      string `bson:"plain,omitempty" json:"plain,omitempty"`
+	BenignLen  int    `bson:"benignLen" json:"benignLen"`
+	PayloadLen int    `bson:"payloadLen" json:"payloadLen"`
 }
 
 // Profile 一个 host 的完整画像。
@@ -179,6 +242,11 @@ type Profile struct {
 	// acceptance.cuponation.no 报过 bypasses=72 inspected=0，全是假绕过。
 	WafActive bool   `bson:"wafActive" json:"wafActive"`
 	Note      string `bson:"note,omitempty" json:"note,omitempty"`
+	// 从成熟引擎移植：把「缺口长什么样」和「证据有多硬」也落库，
+	// 否则下游只能看到一个 bypasses 数组，不知道自己面对的是压缩缺口还是 header 缺口。
+	GapType  string `bson:"gapType,omitempty" json:"gapType,omitempty"`
+	Evidence string `bson:"evidence,omitempty" json:"evidence,omitempty"`
+	Diverged int    `bson:"diverged" json:"diverged"`
 }
 
 var (
@@ -203,14 +271,14 @@ func httpClient() *http.Client {
 	return client
 }
 
-func do(ctx context.Context, target, method, body, ctype string, headers map[string]string) (int, http.Header, error) {
+func do(ctx context.Context, target, method, body, ctype string, headers map[string]string) (int, int, http.Header, error) {
 	u := target
 	if v, ok := headers["__url"]; ok {
 		u = v
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, strings.NewReader(body))
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, nil, err
 	}
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
@@ -223,11 +291,11 @@ func do(ctx context.Context, target, method, body, ctype string, headers map[str
 	}
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, nil, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, resp.Header, nil
+	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, int(n), resp.Header, nil
 }
 
 // blocked 判定：4xx 且不是 401/403 的「应用语义」也算拦；这里按 WAF 惯例取 403/406/501。
@@ -249,7 +317,7 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 	prof := &Profile{Host: u.Host, URL: base, MeasuredAt: time.Now().Format("2006-01-02 15:04:05")}
 
 	// 先取一次基线的 WAF 指纹
-	if code, h, err := do(ctx, base, http.MethodGet, "", "", nil); err == nil {
+	if code, _, h, err := do(ctx, base, http.MethodGet, "", "", nil); err == nil {
 		_ = code
 		prof.Vendor = fingerprint(h)
 	}
@@ -262,13 +330,13 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 			default:
 			}
 			m1, b1, t1, h1 := c.Build(f.Benign, base)
-			bcode, _, berr := do(ctx, base, m1, b1, t1, h1)
+			bcode, blen, _, berr := do(ctx, base, m1, b1, t1, h1)
 			time.Sleep(delay)
 			m2, b2, t2, h2 := c.Build(f.Payload, base)
-			pcode, _, perr := do(ctx, base, m2, b2, t2, h2)
+			pcode, plen, _, perr := do(ctx, base, m2, b2, t2, h2)
 			time.Sleep(delay)
 
-			r := Result{Carrier: c.Name, Class: f.Name, Benign: bcode, Payload: pcode}
+			r := Result{Carrier: c.Name, Class: f.Name, Benign: bcode, Payload: pcode, Plain: c.Plain, BenignLen: blen, PayloadLen: plen}
 			switch {
 			case berr != nil || perr != nil:
 				r.State = StateInconclusive
@@ -298,12 +366,12 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 		}
 		for _, f := range families {
 			bb, ct := buildMultipart(f.Benign, asFile)
-			bcode, _, berr := do(ctx, base, http.MethodPost, bb, ct, nil)
+			bcode, blen, _, berr := do(ctx, base, http.MethodPost, bb, ct, nil)
 			time.Sleep(delay)
 			pb, ct2 := buildMultipart(f.Payload, asFile)
-			pcode, _, perr := do(ctx, base, http.MethodPost, pb, ct2, nil)
+			pcode, plen, _, perr := do(ctx, base, http.MethodPost, pb, ct2, nil)
 			time.Sleep(delay)
-			r := Result{Carrier: name, Class: f.Name, Benign: bcode, Payload: pcode}
+			r := Result{Carrier: name, Class: f.Name, Benign: bcode, Payload: pcode, BenignLen: blen, PayloadLen: plen}
 			switch {
 			case berr != nil || perr != nil, blocked(bcode):
 				r.State = StateInconclusive
@@ -324,6 +392,10 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 	// 收口：一次「payload 被拦」都没观测到时，不能声称任何绕过。
 	// 放行不等于绕过——只有「同载体 benign 放行 + payload 被拦」才建立得起基线。
 	// 这是全项目一直在用的 catch-all 纪律（netguard.IsCatchAll 同理）。
+	// 先跑判定纪律：跨编码守卫会剔除「编码改变了 benign 自己」的假绕过，
+	// 并把缺口类型/证据级别算出来。必须在 WafActive 收口之前，否则剔除后计数对不上。
+	finalize(prof)
+
 	prof.WafActive = prof.Inspected > 0
 	if !prof.WafActive {
 		if len(prof.Bypasses) > 0 {
