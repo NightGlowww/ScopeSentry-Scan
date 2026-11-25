@@ -361,8 +361,16 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 	}
 
 	conc := envInt("WAFSCAN_CONC", 6)
+	// 早停阈值：跑够这么多组合仍是「全 inconclusive / app_rejected」就收手。
+	// 起因（2026-11-26 实测）：CloudFront 的 catch-all 主机上 132 个组合全是 inconclusive，
+	// 264 次请求换回 0 信息，单主机白烧 4 分钟。
+	earlyN := envInt("WAFSCAN_EARLY_N", 24)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var doneCount int
+	aborted := false
 	limiter := time.NewTicker(delay)
 	defer limiter.Stop()
 	ch := make(chan job)
@@ -371,15 +379,15 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 		go func() {
 			defer wg.Done()
 			for j := range ch {
-				if ctx.Err() != nil {
+				if runCtx.Err() != nil {
 					return
 				}
 				<-limiter.C
 				m1, b1, t1, h1 := j.build(j.benign)
-				bcode, blen, _, berr := do(ctx, base, m1, b1, t1, h1)
+				bcode, blen, _, berr := do(runCtx, base, m1, b1, t1, h1)
 				<-limiter.C
 				m2, b2, t2, h2 := j.build(j.payload)
-				pcode, plen, _, perr := do(ctx, base, m2, b2, t2, h2)
+				pcode, plen, _, perr := do(runCtx, base, m2, b2, t2, h2)
 
 				r := Result{Carrier: j.carrier, Class: j.class, Benign: bcode, Payload: pcode,
 					Plain: j.plain, BenignLen: blen, PayloadLen: plen}
@@ -403,6 +411,11 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 					prof.Bypasses = append(prof.Bypasses, j.carrier+":"+j.class)
 				}
 				prof.Results = append(prof.Results, r)
+				doneCount++
+				if !aborted && doneCount >= earlyN && prof.Inspected == 0 && len(prof.Bypasses) == 0 {
+					aborted = true
+					cancel()
+				}
 				mu.Unlock()
 			}
 		}()
@@ -418,6 +431,9 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 	}
 	close(ch)
 	wg.Wait()
+	if aborted && prof.Note == "" {
+		prof.Note = fmt.Sprintf("early-abort: first %d carriers showed no differentiation (all inconclusive/app_rejected); host treated as unmeasurable", earlyN)
+	}
 
 	// 收口：一次「payload 被拦」都没观测到时，不能声称任何绕过。
 	// 放行不等于绕过——只有「同载体 benign 放行 + payload 被拦」才建立得起基线。

@@ -69,7 +69,10 @@ func (r *Runner) ModuleRun() error {
 				defer func() { <-probeSem }()
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				prof, err := Probe(ctx, target, time.Second)
+				// delay 从 1s 降到 150ms：全局限速是硬瓶颈（并发不放大速率），
+				// 132 组合 × 2 请求 × 1s = 4.4 分钟/主机，降到 150ms 后约 40 秒。
+				d := time.Duration(envInt("WAFSCAN_DELAY_MS", 150)) * time.Millisecond
+				prof, err := Probe(ctx, target, d)
 				if err != nil {
 					logger.SlogWarnLocal(fmt.Sprintf("wafscan %s: %v", target, err))
 					return
