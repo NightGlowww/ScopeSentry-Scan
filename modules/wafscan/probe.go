@@ -322,72 +322,102 @@ func Probe(ctx context.Context, rawURL string, delay time.Duration) (*Profile, e
 		prof.Vendor = fingerprint(h)
 	}
 
+	// 并发跑载体矩阵。
+	//
+	// 为什么必须并发：串行时 22 载体 × 6 族 × 2 请求，每请求还要等 delay，单主机 4–5 分钟；
+	// 任务里几台主机直接顶到看门狗 30 分钟阈值——2026-11-26 实测连续两个任务因此被杀、
+	// 节点反复冷启动。改成有界并发（WAFSCAN_CONC，默认 6）+ 全局限速：
+	// 总速率仍由 delay 决定，单主机挂钟时间降到 1/N。
+	type job struct {
+		carrier, class, plain string
+		benign, payload       string
+		build                 func(string) (string, string, string, map[string]string)
+	}
+	var jobs []job
 	for _, c := range carriers {
+		cc := c
 		for _, f := range families {
-			select {
-			case <-ctx.Done():
-				return prof, ctx.Err()
-			default:
-			}
-			m1, b1, t1, h1 := c.Build(f.Benign, base)
-			bcode, blen, _, berr := do(ctx, base, m1, b1, t1, h1)
-			time.Sleep(delay)
-			m2, b2, t2, h2 := c.Build(f.Payload, base)
-			pcode, plen, _, perr := do(ctx, base, m2, b2, t2, h2)
-			time.Sleep(delay)
-
-			r := Result{Carrier: c.Name, Class: f.Name, Benign: bcode, Payload: pcode, Plain: c.Plain, BenignLen: blen, PayloadLen: plen}
-			switch {
-			case berr != nil || perr != nil:
-				r.State = StateInconclusive
-			case blocked(bcode):
-				r.State = StateInconclusive // 基线就被拦：无法归因
-			case blocked(pcode):
-				r.State = StateInspected
-				prof.Inspected++
-			case bcode < 400 && pcode < 400:
-				r.State = StateNotInspected
-				prof.Bypasses = append(prof.Bypasses, c.Name+":"+f.Name)
-			default:
-				r.State = StateAppRejected
-			}
-			if r.State == StateInconclusive {
-				prof.Inconclusive++
-			}
-			prof.Results = append(prof.Results, r)
+			ff := f
+			jobs = append(jobs, job{carrier: cc.Name, class: ff.Name, plain: cc.Plain,
+				benign: ff.Benign, payload: ff.Payload,
+				build: func(p string) (string, string, string, map[string]string) { return cc.Build(p, base) }})
 		}
 	}
-
-	// multipart 两个变体
 	for _, asFile := range []bool{false, true} {
 		name := "mp-field"
 		if asFile {
 			name = "mp-file"
 		}
+		af := asFile
 		for _, f := range families {
-			bb, ct := buildMultipart(f.Benign, asFile)
-			bcode, blen, _, berr := do(ctx, base, http.MethodPost, bb, ct, nil)
-			time.Sleep(delay)
-			pb, ct2 := buildMultipart(f.Payload, asFile)
-			pcode, plen, _, perr := do(ctx, base, http.MethodPost, pb, ct2, nil)
-			time.Sleep(delay)
-			r := Result{Carrier: name, Class: f.Name, Benign: bcode, Payload: pcode, BenignLen: blen, PayloadLen: plen}
-			switch {
-			case berr != nil || perr != nil, blocked(bcode):
-				r.State = StateInconclusive
-				prof.Inconclusive++
-			case blocked(pcode):
-				r.State = StateInspected
-				prof.Inspected++
-			case bcode < 400 && pcode < 400:
-				r.State = StateNotInspected
-				prof.Bypasses = append(prof.Bypasses, name+":"+f.Name)
-			default:
-				r.State = StateAppRejected
-			}
-			prof.Results = append(prof.Results, r)
+			ff := f
+			jobs = append(jobs, job{carrier: name, class: ff.Name,
+				benign: ff.Benign, payload: ff.Payload,
+				build: func(p string) (string, string, string, map[string]string) {
+					b, ct := buildMultipart(p, af)
+					return http.MethodPost, b, ct, nil
+				}})
 		}
 	}
+
+	conc := envInt("WAFSCAN_CONC", 6)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	limiter := time.NewTicker(delay)
+	defer limiter.Stop()
+	ch := make(chan job)
+	for i := 0; i < conc; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range ch {
+				if ctx.Err() != nil {
+					return
+				}
+				<-limiter.C
+				m1, b1, t1, h1 := j.build(j.benign)
+				bcode, blen, _, berr := do(ctx, base, m1, b1, t1, h1)
+				<-limiter.C
+				m2, b2, t2, h2 := j.build(j.payload)
+				pcode, plen, _, perr := do(ctx, base, m2, b2, t2, h2)
+
+				r := Result{Carrier: j.carrier, Class: j.class, Benign: bcode, Payload: pcode,
+					Plain: j.plain, BenignLen: blen, PayloadLen: plen}
+				switch {
+				case berr != nil || perr != nil, blocked(bcode):
+					r.State = StateInconclusive
+				case blocked(pcode):
+					r.State = StateInspected
+				case bcode < 400 && pcode < 400:
+					r.State = StateNotInspected
+				default:
+					r.State = StateAppRejected
+				}
+				mu.Lock()
+				switch r.State {
+				case StateInconclusive:
+					prof.Inconclusive++
+				case StateInspected:
+					prof.Inspected++
+				case StateNotInspected:
+					prof.Bypasses = append(prof.Bypasses, j.carrier+":"+j.class)
+				}
+				prof.Results = append(prof.Results, r)
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, j := range jobs {
+		select {
+		case <-ctx.Done():
+			close(ch)
+			wg.Wait()
+			return prof, ctx.Err()
+		case ch <- j:
+		}
+	}
+	close(ch)
+	wg.Wait()
 
 	// 收口：一次「payload 被拦」都没观测到时，不能声称任何绕过。
 	// 放行不等于绕过——只有「同载体 benign 放行 + payload 被拦」才建立得起基线。
