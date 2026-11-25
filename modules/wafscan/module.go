@@ -42,13 +42,13 @@ func (r *Runner) ModuleRun() error {
 	for {
 		select {
 		case <-contextmanager.GlobalContextManagers.GetContext(r.Option.ID).Done():
-			wg.Wait()
+			waitProbes(&wg)
 			r.NextModule.CloseInput()
 			return nil
 		case data, ok := <-r.Input:
 			if !ok {
 				r.NextModule.CloseInput()
-				wg.Wait()
+				waitProbes(&wg)
 				logger.SlogInfoLocal(fmt.Sprintf("module %v target %v close resultChan", r.GetName(), r.Option.Target))
 				return nil
 			}
