@@ -80,6 +80,9 @@ func main() {
 
 	// 初始化协程池
 	pool.Initialize()
+	// 停滞看门狗：任务超时无进展就退出进程，让容器重拉，避免唯一节点被一个卡死任务占住。
+	// 2026-11-25 实测：一个任务在 URLScan 后静默 15 分钟，stop_task 也解不开。
+	task.StartStallWatchdog()
 	// 初始化个模块的协程池
 	pool.PoolManage.InitializeModulesPools(config.ModulesConfig)
 	go pool.StartMonitoring()

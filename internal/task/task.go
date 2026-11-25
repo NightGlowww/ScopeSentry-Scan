@@ -114,6 +114,9 @@ func RunRedisTask() {
 			taskKey := fmt.Sprintf("task:%v", runnerOption.ID)
 
 			logger.SlogInfo(fmt.Sprintf("Task begin: %v %v", runnerOption.ID, runnerOption.TaskName))
+			// 停滞看门狗：任务开始打点，之后每完成一个目标刷新一次；
+			// 超过 STALL_TIMEOUT_MIN 无进展就退出进程让容器重拉（见 watchdog.go）。
+			markTaskActive(runnerOption.ID)
 			// 告诉服务端「这个节点现在真正在跑哪个任务」。
 			// 任务状态对账靠它区分「运行中」和「排队/孤儿」——
 			// 2026-11-25 实测：库里 33 个 running，节点日志只有 1 个 Task begin。
@@ -217,6 +220,8 @@ func RunRedisTask() {
 									} else {
 										// 目标运行完毕删除目标
 										DeletePebbleTarget(pebbledb.PebbleStore, []byte(op.ID+":"+op.Target))
+										// 有目标跑完就说明任务在推进，刷新看门狗打点
+										markProgress()
 									}
 								}
 							}
@@ -244,6 +249,7 @@ func RunRedisTask() {
 				// 删除任务上下文
 				contextmanager.GlobalContextManagers.DeleteContext(runnerOption.ID)
 			}
+			markTaskIdle()
 			logger.SlogInfo(fmt.Sprintf("Task end: %v - %v", runnerOption.ID, runnerOption.TaskName))
 			if v, ok := taskFailStart.Load(runnerOption.ID); ok {
 				if start, ok2 := v.(int64); ok2 {
