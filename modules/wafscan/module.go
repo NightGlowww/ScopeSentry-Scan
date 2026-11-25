@@ -39,16 +39,34 @@ var measured sync.Map
 
 func (r *Runner) ModuleRun() error {
 	var wg sync.WaitGroup
+	// 启动下游模块。
+	//
+	// 每个模块都负责在 ModuleRun 开头把自己的 NextModule 拉起来（dirscan/urlsecurity 都是这么写的），
+	// 唯独 wafscan 没有——它只往 NextModule.GetInput() 里塞数据，却没人启动那个模块的循环。
+	// 结果：wafscan 的下游是 VulnerabilityScan，它的 ModuleRun 从未被调用，
+	// 进度里永远没有 VulnerabilityScan_start，nuclei 自然一次都没跑过（2026-11-26 实测）。
+	var nextModuleRun sync.WaitGroup
+	nextModuleRun.Add(1)
+	go func() {
+		defer nextModuleRun.Done()
+		if r.NextModule != nil {
+			if err := r.NextModule.ModuleRun(); err != nil {
+				logger.SlogError(fmt.Sprintf("Next module run error: %v", err))
+			}
+		}
+	}()
 	for {
 		select {
 		case <-contextmanager.GlobalContextManagers.GetContext(r.Option.ID).Done():
 			waitProbes(&wg)
 			r.NextModule.CloseInput()
+			nextModuleRun.Wait()
 			return nil
 		case data, ok := <-r.Input:
 			if !ok {
 				r.NextModule.CloseInput()
 				waitProbes(&wg)
+				nextModuleRun.Wait()
 				logger.SlogInfoLocal(fmt.Sprintf("module %v target %v close resultChan", r.GetName(), r.Option.Target))
 				return nil
 			}
