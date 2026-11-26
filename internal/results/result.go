@@ -45,7 +45,10 @@ func (r *result) Insert(name string, result *[]interface{}) bool {
 		if errors.As(err, &writeException) {
 			if name == "PageMonitoring" || name == "PageMonitoringBody" {
 				for _, wErr := range writeException.WriteErrors {
-					logger.SlogWarnLocal(fmt.Sprintf("插入失败的文档: %v, 错误: %v\n", wErr))
+					// 两个 %v 只给了一个参数（go vet 直接报 build failed），
+					// 真要打印时会是 "%!v(MISSING)"，把定位信息也吃掉。
+					logger.SlogWarnLocal(fmt.Sprintf("插入失败的文档: index=%v code=%v msg=%s",
+						wErr.Index, wErr.Code, wErr.Message))
 				}
 			}
 		}
