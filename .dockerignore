@@ -1,0 +1,25 @@
+# 构建上下文只留镜像真正需要的东西：
+#   dockerfile、msyh.ttc、tools/linux/*、dist/.../ScopeSentry-Scan
+# 其余（git 历史、运行时数据、模板、字典）都会让上下文膨胀到几个 GB。
+.git
+.github
+.idea
+.vscode
+
+# 运行时数据与外部挂载（compose 里的 ./data ./poc ./dictionaries ./config ./state）
+data
+poc
+dictionaries
+config
+state
+*.log
+
+# 构建产物：只保留镜像要拷的那个二进制
+dist/*
+!dist/ScopeSentry-Scan_linux_amd64_v1
+!dist/ScopeSentry-Scan_linux_amd64_v1/ScopeSentry-Scan
+
+# 开发与测试目录
+test
+docs
+build

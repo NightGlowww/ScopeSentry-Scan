@@ -69,6 +69,13 @@ func main() {
 		tplPath = tp
 	}
 
+
+	// INSERT=1：走真实的 InsertVulnerabilityScan 写库路径，验证 Response 能否落进 vulnerabilityDetail。
+	// 这条是「nuclei 保存了 16KB 响应，但详情表还是 0 字节」的最后一环，必须单独验。
+	if os.Getenv("INSERT") == "1" {
+		checkInsert(ts.URL)
+		return
+	}
 	parser := templates.NewParser()
 	ne, err := nuclei.NewThreadSafeNucleiEngineCtx(context.Background(), parser,
 		nuclei.DisableUpdateCheck(), nuclei.WithResponseSaveSize(64*1024))
