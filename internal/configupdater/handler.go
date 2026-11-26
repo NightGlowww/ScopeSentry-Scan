@@ -16,6 +16,7 @@ import (
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/redis"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,8 +62,40 @@ func handleRefreshConfigMessage(jsonData Message) {
 	case "UpdateSystem":
 		SystemUpdate(jsonData.Content)
 	case "restart":
+		// 不能直接 os.Exit(0)：服务端在改配置（扫描模板/字典/项目）时会广播 restart，
+		// 而这时节点很可能正在跑任务——硬退出等于把那条扫描腰斩。
+		// 2026-11-26 实测两次：felix 与 superdrug 的目录扫描都在跑到一半时被配置更新打断，
+		// 任务停留在 status=1，最后变成「没人跑的幽灵任务」。
+		// 改成等当前任务结束再退出；等太久（默认 30 分钟）也要退，否则新配置永远不生效。
+		go gracefulRestart(jsonData.Content)
+	}
+}
+
+// gracefulRestart 等手头的任务跑完再退出，最多等 TASK_RESTART_GRACE_SEC（默认 1800 秒）。
+// 参数是服务端附带的原因，只用于日志。
+func gracefulRestart(reason string) {
+	grace := 1800
+	if v := strings.TrimSpace(os.Getenv("TASK_RESTART_GRACE_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			grace = n
+		}
+	}
+	if grace == 0 {
+		logger.SlogInfoLocal("config restart: grace disabled, exiting now (" + reason + ")")
 		os.Exit(0)
 	}
+	deadline := time.Now().Add(time.Duration(grace) * time.Second)
+	logger.SlogInfoLocal(fmt.Sprintf("config restart requested (%s): 等待当前任务结束，最多 %ds", reason, grace))
+	for time.Now().Before(deadline) {
+		running, _ := handler.TaskHandle.GetRunFin()
+		if running <= 0 {
+			logger.SlogInfoLocal("config restart: no running task, exiting")
+			os.Exit(0)
+		}
+		time.Sleep(10 * time.Second)
+	}
+	logger.SlogWarnLocal(fmt.Sprintf("config restart: 等待超时（%ds）仍有用例在跑，强制退出", grace))
+	os.Exit(0)
 }
 
 func RefreshConfig() {
