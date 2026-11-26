@@ -179,6 +179,24 @@ func WithGlobalRateLimitCtx(ctx context.Context, maxTokens int, duration time.Du
 	}
 }
 
+// WithResponseSaveSize 设置结果事件里保留的响应体字节数。
+//
+// 为什么必须设：nuclei 的 MakeResultEventItem 用 truncateResponse 处理 Response，
+// 而 truncateResponse 在 ResponseSaveSize==0 时会把**任何**响应截成空串：
+//
+//	if len(responseString) > 0 { return responseString[:0] }
+//
+// 于是 ResultEvent.Response 恒为 ""，下游（漏洞详情、复核、Jev 判断）全部拿不到证据。
+// 默认给 64 KiB：足够看清 matcher 命中的上下文，又不会把库撑爆。
+func WithResponseSaveSize(size int) NucleiSDKOptions {
+	return func(e *NucleiEngine) error {
+		if size > 0 && e.opts != nil {
+			e.opts.ResponseSaveSize = size
+		}
+		return nil
+	}
+}
+
 // HeadlessOpts contains options for headless templates
 type HeadlessOpts struct {
 	PageTimeout     int // timeout for page load

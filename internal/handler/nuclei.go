@@ -28,7 +28,9 @@ func NewNucleiEngine() *nuclei.ThreadSafeNucleiEngine {
 		Parser = templates.NewParser()
 	}
 	ctx := context.Background()
-	ne, err := nuclei.NewThreadSafeNucleiEngineCtx(ctx, Parser, nuclei.DisableUpdateCheck())
+	// WithResponseSaveSize 必须给非零值：否则 ResultEvent.Response 恒为空，
+	// 漏洞详情里就没有原始响应，复核和 Jev 都只能凭模板名猜。
+	ne, err := nuclei.NewThreadSafeNucleiEngineCtx(ctx, Parser, nuclei.DisableUpdateCheck(), nuclei.WithResponseSaveSize(64*1024))
 	if err != nil {
 		logger.SlogErrorLocal(fmt.Sprintf("NewNucleiEngine error: %v", err))
 		return nil

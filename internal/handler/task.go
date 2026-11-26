@@ -69,13 +69,24 @@ func (h *Handle) ProgressStart(typ string, target string, taskId string, flag in
 	logger.SlogInfo(fmt.Sprintf("%v module start scanning the target: %v", typ, target))
 	key := "TaskInfo:progress:" + taskId + ":" + target
 	ty := typ + "_start"
+	ctx := context.Background()
+	// 同一目标重跑（retest / 重新投递 / 暂停后恢复）时，上一轮写下的 <module>_end 还留在
+	// 同一个 hash 里，而这一轮只覆盖 <module>_start —— 结果就是「结束时间早于开始时间」，
+	// 前端算出来的耗时为负、排序全乱（2026-11-26 实测：SubdomainScan 18:47:32 → 11:24:12）。
+	// 所以每次开跑前先清掉本轮要写的那个 end；typ=="scan" 表示整个目标从头跑一轮，
+	// 直接把 hash 清空更干净（否则上一轮 WebCrawler/VulnerabilityScan 的 end 会一直挂着）。
+	if typ == "scan" {
+		_ = redis.RedisClient.Del(ctx, key)
+	} else {
+		_ = redis.RedisClient.HDel(ctx, key, typ+"_end")
+	}
 	ProgressInfo := map[string]interface{}{
 		ty: utils.Tools.GetTimeNow(),
 	}
 	if typ == "scan" {
 		ProgressInfo["node"] = global.AppConfig.NodeName
 	}
-	err := redis.RedisClient.HMSet(context.Background(), key, ProgressInfo)
+	err := redis.RedisClient.HMSet(ctx, key, ProgressInfo)
 	if err != nil {
 		logger.SlogError(fmt.Sprintf("ProgressStart redis error: %s", err))
 		return
