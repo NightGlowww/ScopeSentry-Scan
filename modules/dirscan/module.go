@@ -91,6 +91,12 @@ func (r *Runner) ModuleRun() error {
 				}
 				if dirResult, ok := result.(types.DirResult); ok {
 					dirResult.TaskName = r.Option.TaskName
+					// 文件泄露：DirScan 是 .env / *.bak / *.sql / .git/config 这类路径的唯一发现者。
+					// 只收 2xx（真有内容可读）+ 高信号路径，避免把整个目录扫描结果倒进页面。
+					if kind, hit := results.ClassifyLeak(dirResult.Url); hit &&
+						dirResult.Status >= 200 && dirResult.Status < 300 {
+						go results.Results.FileLeak(dirResult.Url, "", kind, dirResult.Status, int64(dirResult.Length))
+					}
 					go results.Handler.Dir(&dirResult)
 				}
 			}
