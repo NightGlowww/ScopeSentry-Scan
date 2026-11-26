@@ -13,6 +13,7 @@ import (
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/contextmanager"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/global"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/pebbledb"
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/progress"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/redis"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/utils"
@@ -67,6 +68,9 @@ func (h *Handle) ProgressStart(typ string, target string, taskId string, flag in
 		return
 	}
 	logger.SlogInfo(fmt.Sprintf("%v module start scanning the target: %v", typ, target))
+	// 每个模块开始都算一次进展：看门狗据此判断「还在动」，
+	// 而不是等整个目标跑完（单目标常常超过 30 分钟，会被误判成停滞）。
+	progress.Touch()
 	key := "TaskInfo:progress:" + taskId + ":" + target
 	ty := typ + "_start"
 	ctx := context.Background()
@@ -100,6 +104,7 @@ func (h *Handle) ProgressEnd(typ string, target string, taskId string, flag int,
 		return
 	}
 	logger.SlogInfo(fmt.Sprintf("%v module end scanning the target: %v running time: %v", typ, target, time))
+	progress.Touch()
 	key := "TaskInfo:progress:" + taskId + ":" + target
 	ty := typ + "_end"
 	ProgressInfo := map[string]interface{}{

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/progress"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
 )
 
@@ -25,8 +26,7 @@ import (
 // 取消上下文已经在本次事件里被证明无效。重启整进程是唯一能真正释放节点的手段，
 // 代价是冷启动（加载 POC/字典约 15 分钟），但比空转几小时好。
 var (
-	lastProgressAt atomic.Int64 // unix 秒
-	activeTaskID   atomic.Value // string；空串表示没有任务在跑
+	activeTaskID atomic.Value // string；空串表示没有任务在跑
 )
 
 func init() {
@@ -44,9 +44,11 @@ func markTaskIdle() {
 	activeTaskID.Store("")
 }
 
-// markProgress 每完成一个目标调用一次。
+// markProgress 刷新进展打点。
+// 注意：handler 里每个模块的开始/结束也会 Touch 同一个时间戳（见 internal/progress），
+// 所以「一个目标跑很久」不再等于「停滞」。
 func markProgress() {
-	lastProgressAt.Store(time.Now().Unix())
+	progress.Touch()
 }
 
 // stallTimeout 从环境变量读，默认 30 分钟。
@@ -75,11 +77,11 @@ func StartStallWatchdog() {
 			if id == "" {
 				continue
 			}
-			last := lastProgressAt.Load()
-			if last == 0 {
+			last := progress.Last()
+			if last.IsZero() {
 				continue
 			}
-			idle := time.Since(time.Unix(last, 0))
+			idle := time.Since(last)
 			if idle < limit {
 				continue
 			}
