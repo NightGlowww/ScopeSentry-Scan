@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/global"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/handler"
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/task"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/redis"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
 	"os"
@@ -47,6 +48,9 @@ func handleRefreshConfigMessage(jsonData Message) {
 		UpdateNotification()
 	case "stop_task":
 		handler.TaskHandle.StopTask(jsonData.Content)
+		// 取消 context 拦不住正在跑的模块 goroutine（nuclei/SentryDir 不理会 ctx.Done），
+		// 所以给停止请求一个宽限兜底：到期还在跑就退出进程让容器重拉（见 internal/task/stop.go）。
+		task.StartStopEscalation(jsonData.Content)
 	case "delete_task":
 		handler.TaskHandle.DeleteTask(jsonData.Content)
 	case "install_plugin":
