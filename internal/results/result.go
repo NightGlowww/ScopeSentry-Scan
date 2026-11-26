@@ -142,15 +142,27 @@ func (r *result) InsertVulnerabilityScan(result *[]interface{}) {
 		vulnResult.Request = ""
 		vulnResult.Response = ""
 
-		fields := bson.M{
+		// 观测字段（每次命中都可能变）与结论字段（第一次命中就定型）必须分开写。
+		//
+		// 2026-11-26 实测：同一条 pprof 漏洞被重扫后，
+		//   · level 从人工判定后的 low 被模板 severity 顶回 high；
+		//   · time 被刷成重扫当天，于是「2 天前的洞」每天都被算成 new24h。
+		// 结论一旦下过就不该被机器覆盖 —— 这里把 level/time 挪进 $setOnInsert，
+		// 另外补一个 lastSeenAt 记录最近一次命中，新鲜度照样看得见。
+		observed := bson.M{
 			"url": vulnResult.Url, "vulnid": vulnResult.VulnId, "vulname": vulnResult.VulName,
-			"matched": vulnResult.Matched, "project": vulnResult.Project, "level": vulnResult.Level,
-			"time": vulnResult.Time, "taskName": vulnResult.TaskName,
-			"rootDomain": vulnResult.RootDomain, "tags": vulnResult.Tags,
+			"matched": vulnResult.Matched, "project": vulnResult.Project,
+			"taskName": vulnResult.TaskName, "rootDomain": vulnResult.RootDomain,
+			"tags": vulnResult.Tags, "lastSeenAt": vulnResult.Time,
+		}
+		firstSeen := bson.M{
+			"status": vulnResult.Status,
+			"level":  vulnResult.Level,
+			"time":   vulnResult.Time,
 		}
 		_, err := mongodb.MongodbClient.Upsert("vulnerability",
 			bson.M{"hash": vulnResult.Hash},
-			bson.M{"$set": fields, "$setOnInsert": bson.M{"status": vulnResult.Status}})
+			bson.M{"$set": observed, "$setOnInsert": firstSeen})
 		if err != nil {
 			logger.SlogWarnLocal(fmt.Sprintf("upsert vulnerability %s error: %s", vulnResult.Hash, err))
 		}
