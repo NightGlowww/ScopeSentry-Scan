@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/interfaces"
+	"github.com/Autumn-27/ScopeSentry-Scan/internal/results"
 	"github.com/Autumn-27/ScopeSentry-Scan/internal/types"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/logger"
 	"github.com/Autumn-27/ScopeSentry-Scan/pkg/utils"
@@ -176,6 +177,9 @@ func (p *Plugin) Execute(input interface{}) (interface{}, error) {
 		asset.Banner = escaped
 		asset.Time = utils.Tools.GetTimeNow()
 		asset.LastScanTime = asset.Time
+		// NPoC：fingerprintx 只有拿到协议响应才会走到这里，所以这一刻就是「已证实」。
+		// 写进 asset_npoc_service，供服务端「资产管理 → NPoC 服务」页展示（此前无人写，页面恒空）。
+		results.Results.Npoc(asset.Host, asset.Port, fingerResult.Protocol)
 		return nil, nil
 	}
 	return nil, nil
