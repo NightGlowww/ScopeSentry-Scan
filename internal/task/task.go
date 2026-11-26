@@ -245,7 +245,24 @@ func RunRedisTask() {
 				time.Sleep(3 * time.Second)
 				wg.Wait()
 				passivescan.PassiveScanChanDone(runnerOption.ID)
-				passivescan.PassiveScanWgMap[runnerOption.ID].Wait()
+				// 被动扫描收尾必须有上限。
+				//
+				// 2026-11-26 实测：一个「只有任务描述、没有目标」的任务（服务端 AddTask 收了
+				// target 字段但没往 TaskInfo:<id> 推目标）走到这里时，PassiveScanWgMap 里那条
+				// WaitGroup 从没 Add 过也就没人 Done —— 直接 .Wait() 会永久阻塞，
+				// 任务结束不了，30 分钟后 stall watchdog 把整个节点杀掉重启，循环往复。
+				if psw := passivescan.PassiveScanWgMap[runnerOption.ID]; psw != nil {
+					done := make(chan struct{})
+					go func() {
+						psw.Wait()
+						close(done)
+					}()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Minute):
+						logger.SlogWarnLocal(fmt.Sprintf("任务 %s 的被动扫描收尾等待超过 5 分钟，继续往下走（目标可能为空）", runnerOption.ID))
+					}
+				}
 				// 删除任务上下文
 				contextmanager.GlobalContextManagers.DeleteContext(runnerOption.ID)
 			}
