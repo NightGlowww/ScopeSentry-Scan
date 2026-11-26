@@ -55,6 +55,20 @@ func main() {
 		panic(err)
 	}
 
+	// TPL / TARGET 给了就用真实模板 + 真实目标跑一次，用来对照「线上为什么没存响应」。
+	tplPath := os.Getenv("TPL")
+	target := ts.URL
+	if tplPath != "" {
+		target = os.Getenv("TARGET")
+		if target == "" {
+			fmt.Println("TPL 设了但 TARGET 为空")
+			os.Exit(4)
+		}
+		fmt.Println("using real template:", tplPath, "target:", target)
+	} else {
+		tplPath = tp
+	}
+
 	parser := templates.NewParser()
 	ne, err := nuclei.NewThreadSafeNucleiEngineCtx(context.Background(), parser,
 		nuclei.DisableUpdateCheck(), nuclei.WithResponseSaveSize(64*1024))
@@ -76,8 +90,8 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if err := ne.ExecuteNucleiWithOptsCtx(ctx, []string{ts.URL},
-		nuclei.WithTemplatesOrWorkflows(nuclei.TemplateSources{Templates: []string{tp}})); err != nil {
+	if err := ne.ExecuteNucleiWithOptsCtx(ctx, []string{target},
+		nuclei.WithTemplatesOrWorkflows(nuclei.TemplateSources{Templates: []string{tplPath}})); err != nil {
 		fmt.Println("execute error:", err)
 		os.Exit(3)
 	}
