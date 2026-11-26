@@ -131,13 +131,25 @@ func (r *result) InsertVulnerabilityScan(result *[]interface{}) {
 		vulnResult.Hash = hex.EncodeToString(sum[:])[:16]
 
 		// 详情按 hash 覆盖写：同一洞再命中时更新证据，不新增行。
-		_, _ = mongodb.MongodbClient.Upsert("vulnerabilityDetail",
+		//
+		// 写失败不能静默：之前这里是赋值给下划线，详情表里 3 条记录全是 0 字节，
+		// 看不出是「nuclei 没给响应」还是「写库失败」（2026-11-26）。
+		// 现在两条都记：写库报错直接说原因；响应为空则连模板 id 一起记，
+		// 用来区分「这个模板本来就没有响应」和「链路把响应丢了」。
+		_, derr := mongodb.MongodbClient.Upsert("vulnerabilityDetail",
 			bson.M{"hash": vulnResult.Hash},
 			bson.M{"$set": types.VulnerabilityDetail{
 				Hash:     vulnResult.Hash,
 				Request:  vulnResult.Request,
 				Response: vulnResult.Response,
 			}})
+		if derr != nil {
+			logger.SlogWarnLocal(fmt.Sprintf("upsert vulnerabilityDetail %s error: %s (req=%dB resp=%dB)",
+				vulnResult.Hash, derr, len(vulnResult.Request), len(vulnResult.Response)))
+		} else if len(vulnResult.Response) == 0 {
+			logger.SlogWarnLocal(fmt.Sprintf("vulnerability %s (%s) hit but empty response: req=%dB matched=%s",
+				vulnResult.Hash, vulnResult.VulnId, len(vulnResult.Request), vulnResult.Matched))
+		}
 
 		vulnResult.Request = ""
 		vulnResult.Response = ""
